@@ -120,16 +120,19 @@ def standardise_instrument_column(df):
 
 def remove_duplicate_measurements(df):
     """
-    Remove measurements duplicated across overlapping
+    Merge measurements duplicated across overlapping
     Microtops exports.
 
     Uses instrument + DATE + TIME as the observation key.
+
+    Keeps all source filenames in source_files_all.
     """
 
     required = {
         "SN",
         "DATE",
         "TIME",
+        "source_file",
     }
 
     missing = sorted(
@@ -145,23 +148,52 @@ def remove_duplicate_measurements(df):
 
     before = len(df)
 
+    key_columns = [
+        "SN",
+        "DATE",
+        "TIME",
+    ]
+
+    source_summary = (
+        df.groupby(
+            key_columns,
+            dropna=False,
+        )["source_file"]
+        .agg(
+            lambda values: ";".join(
+                sorted(
+                    set(
+                        str(v)
+                        for v in values
+                        if pd.notna(v)
+                    )
+                )
+            )
+        )
+        .reset_index(
+            name="source_files_all"
+        )
+    )
+
     df = df.drop_duplicates(
-        subset=[
-            "SN",
-            "DATE",
-            "TIME",
-        ],
+        subset=key_columns,
         keep="first",
     ).copy()
+
+    df = df.merge(
+        source_summary,
+        on=key_columns,
+        how="left",
+    )
 
     removed = before - len(df)
 
     print(
-        f"Duplicate rows removed: {removed}"
+        f"Duplicate rows merged: {removed}"
     )
 
     return df
-
+    
 
 # ============================================================
 # MAIN

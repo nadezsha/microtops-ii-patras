@@ -55,8 +55,8 @@ ANALYSIS_TIMES = [
     "18:00",
 ]
 
-# Small region around the Patras measurements.
-# Order required by ADS:
+# Small region around Patras.
+# ADS order:
 # North, West, South, East
 AREA = [
     38.6,
@@ -65,9 +65,10 @@ AREA = [
     22.2,
 ]
 
+TARGET_LAT = 38.283
+TARGET_LON = 21.783
 
-# 1 Dobson Unit corresponds to approximately
-# 2.1415e-5 kg m^-2 of ozone.
+# 1 DU ≈ 2.1415e-5 kg m^-2
 KG_M2_PER_DU = 2.1415e-5
 
 
@@ -77,8 +78,8 @@ KG_M2_PER_DU = 2.1415e-5
 
 def load_api_credentials():
     """
-    Read the GitHub secret containing the ADS API configuration
-    and write a temporary .cdsapirc file.
+    Read ADS API configuration from GitHub secret and
+    write a temporary ~/.cdsapirc file.
     """
 
     secret = os.environ.get(
@@ -108,6 +109,8 @@ def read_measurement_dates():
     """
     Read unique Microtops observation dates from the
     processed raw master dataset.
+
+    Microtops DATE format is DD/MM/YYYY.
     """
 
     if not RAW_MASTER_FILE.is_file():
@@ -128,9 +131,19 @@ def read_measurement_dates():
 
     dates = pd.to_datetime(
         df["DATE"],
-        dayfirst=True,
+        format="%d/%m/%Y",
         errors="coerce",
     )
+
+    invalid_n = int(
+        dates.isna().sum()
+    )
+
+    if invalid_n > 0:
+        print(
+            f"Warning: {invalid_n} rows contain "
+            f"unparseable DATE values."
+        )
 
     dates = sorted(
         dates.dropna()
@@ -160,7 +173,7 @@ def download_cams_ozone(
 
     target = (
         DOWNLOAD_DIR
-        / f"cams_ozone_{date_text}.netcdf_zip"
+        / f"cams_ozone_{date_text}.zip"
     )
 
     print()
@@ -189,7 +202,7 @@ def download_cams_ozone(
 
 def extract_netcdf(zip_path):
     """
-    Extract NetCDF file(s) from an ADS zipped NetCDF response.
+    Extract NetCDF file(s) from ADS zipped NetCDF output.
     """
 
     extract_dir = (
@@ -206,12 +219,11 @@ def extract_netcdf(zip_path):
         zip_path,
         "r",
     ) as archive:
-
         archive.extractall(
             extract_dir
         )
 
-    files = list(
+    files = sorted(
         extract_dir.glob("*.nc")
     )
 
@@ -226,8 +238,7 @@ def extract_netcdf(zip_path):
 
 def detect_ozone_variable(dataset):
     """
-    Find the total-column ozone variable in the
-    returned CAMS NetCDF dataset.
+    Find the total-column ozone variable in CAMS output.
     """
 
     candidates = [
@@ -247,11 +258,30 @@ def detect_ozone_variable(dataset):
     )
 
 
+def detect_coordinate_name(
+    data_array,
+    candidates,
+):
+    """
+    Return the first available coordinate name.
+    """
+
+    for name in candidates:
+        if (
+            name in data_array.coords
+            or name in data_array.dims
+        ):
+            return name
+
+    return None
+
+
 def extract_rows(
     netcdf_files,
 ):
     """
-    Convert CAMS NetCDF output into a small tabular dataset.
+    Extract ozone at the nearest CAMS grid point
+    to Patras.
     """
 
     output_rows = []
@@ -263,125 +293,246 @@ def extract_rows(
             f"{file_path.name}"
         )
 
-        ds = xr.open_dataset(
+        with xr.open_dataset(
             file_path
-        )
+        ) as ds:
 
-        ozone_var = (
-            detect_ozone_variable(ds)
-        )
-
-        ozone = ds[
-            ozone_var
-        ]
-
-        # Determine coordinate names.
-        lat_name = (
-            "latitude"
-            if "latitude" in ozone.coords
-            else "lat"
-        )
-
-        lon_name = (
-            "longitude"
-            if "longitude" in ozone.coords
-            else "lon"
-        )
-
-        # Use the centre of the Microtops measurement
-        # region for nearest-grid-cell extraction.
-        target_lat = 38.283
-        target_lon = 21.783
-
-        point = ozone.sel(
-            {
-                lat_name: target_lat,
-                lon_name: target_lon,
-            },
-            method="nearest",
-        )
-
-        # Identify available time coordinate.
-        time_name = None
-
-        for candidate in [
-            "valid_time",
-            "time",
-        ]:
-
-            if candidate in point.coords:
-                time_name = candidate
-                break
-
-        if time_name is None:
-            raise KeyError(
-                "No CAMS time coordinate found."
+            ozone_var = (
+                detect_ozone_variable(ds)
             )
 
-        for index in range(
-            point.sizes.get(
-                time_name,
-                1,
-            )
-        ):
+            ozone = ds[
+                ozone_var
+            ]
 
-            item = (
-                point.isel(
+            lat_name = detect_coordinate_name(
+                ozone,
+                [
+                    "latitude",
+                    "lat",
+                ],
+            )
+
+            lon_name = detect_coordinate_name(
+                ozone,
+                [
+                    "longitude",
+                    "lon",
+                ],
+            )
+
+            if lat_name is None:
+                raise KeyError(
+                    "Could not identify CAMS latitude "
+                    f"coordinate. Coordinates: "
+                    f"{list(ozone.coords)}"
+                )
+
+            if lon_name is None:
+                raise KeyError(
+                    "Could not identify CAMS longitude "
+                    f"coordinate. Coordinates: "
+                    f"{list(ozone.coords)}"
+                )
+
+            point = ozone.sel(
+                {
+                    lat_name: TARGET_LAT,
+                    lon_name: TARGET_LON,
+                },
+                method="nearest",
+            )
+
+            time_name = detect_coordinate_name(
+                point,
+                [
+                    "valid_time",
+                    "time",
+                ],
+            )
+
+            if time_name is None:
+                raise KeyError(
+                    "No CAMS time coordinate found. "
+                    f"Coordinates: {list(point.coords)}; "
+                    f"dimensions: {point.dims}"
+                )
+
+            # ------------------------------------------------
+            # Convert to a simple 1-D time series.
+            # CAMS files can retain additional singleton
+            # dimensions such as step/reference time.
+            # ------------------------------------------------
+
+            point = point.squeeze(
+                drop=True
+            )
+
+            print(
+                f"  Ozone variable: {ozone_var}"
+            )
+            print(
+                f"  Point dimensions after squeeze: "
+                f"{point.dims}"
+            )
+            print(
+                f"  Point shape after squeeze: "
+                f"{point.shape}"
+            )
+
+            if time_name in point.dims:
+
+                n_times = point.sizes[
+                    time_name
+                ]
+
+                for index in range(
+                    n_times
+                ):
+
+                    item = point.isel(
+                        {
+                            time_name: index
+                        }
+                    )
+
+                    item = item.squeeze(
+                        drop=True
+                    )
+
+                    values = np.asarray(
+                        item.values
+                    )
+
+                    if values.size != 1:
+                        raise ValueError(
+                            "Expected one CAMS ozone value "
+                            "after spatial/time selection, "
+                            f"but found shape {values.shape} "
+                            f"with {values.size} values. "
+                            f"Remaining dimensions: "
+                            f"{item.dims}"
+                        )
+
+                    ozone_kg_m2 = float(
+                        values.reshape(-1)[0]
+                    )
+
+                    ozone_du = (
+                        ozone_kg_m2
+                        / KG_M2_PER_DU
+                    )
+
+                    timestamp = (
+                        pd.to_datetime(
+                            point[
+                                time_name
+                            ].isel(
+                                {
+                                    time_name:
+                                        index
+                                }
+                            ).values,
+                            utc=True,
+                        )
+                    )
+
+                    lat_used = float(
+                        point[
+                            lat_name
+                        ].values
+                    )
+
+                    lon_used = float(
+                        point[
+                            lon_name
+                        ].values
+                    )
+
+                    output_rows.append(
+                        {
+                            "datetime_utc":
+                                timestamp,
+                            "ozone_kg_m2":
+                                ozone_kg_m2,
+                            "ozone_DU":
+                                ozone_du,
+                            "grid_latitude":
+                                lat_used,
+                            "grid_longitude":
+                                lon_used,
+                            "source":
+                                (
+                                    "CAMS global atmospheric "
+                                    "composition analysis"
+                                ),
+                        }
+                    )
+
+            else:
+
+                # In case the time coordinate exists only
+                # as a scalar coordinate.
+                values = np.asarray(
+                    point.values
+                )
+
+                if values.size != 1:
+                    raise ValueError(
+                        "Expected one CAMS ozone value "
+                        "for scalar-time output, but found "
+                        f"shape {values.shape} with "
+                        f"{values.size} values. "
+                        f"Dimensions: {point.dims}"
+                    )
+
+                ozone_kg_m2 = float(
+                    values.reshape(-1)[0]
+                )
+
+                ozone_du = (
+                    ozone_kg_m2
+                    / KG_M2_PER_DU
+                )
+
+                timestamp = pd.to_datetime(
+                    point[
+                        time_name
+                    ].values,
+                    utc=True,
+                )
+
+                lat_used = float(
+                    point[
+                        lat_name
+                    ].values
+                )
+
+                lon_used = float(
+                    point[
+                        lon_name
+                    ].values
+                )
+
+                output_rows.append(
                     {
-                        time_name: index
+                        "datetime_utc":
+                            timestamp,
+                        "ozone_kg_m2":
+                            ozone_kg_m2,
+                        "ozone_DU":
+                            ozone_du,
+                        "grid_latitude":
+                            lat_used,
+                        "grid_longitude":
+                            lon_used,
+                        "source":
+                            (
+                                "CAMS global atmospheric "
+                                "composition analysis"
+                            ),
                     }
                 )
-                if time_name
-                in point.dims
-                else point
-            )
-
-            ozone_kg_m2 = float(
-                item.values
-            )
-
-            ozone_du = (
-                ozone_kg_m2
-                / KG_M2_PER_DU
-            )
-
-            timestamp = pd.to_datetime(
-                item[
-                    time_name
-                ].values
-            )
-
-            lat_used = float(
-                item[
-                    lat_name
-                ].values
-            )
-
-            lon_used = float(
-                item[
-                    lon_name
-                ].values
-            )
-
-            output_rows.append(
-                {
-                    "datetime_utc":
-                        timestamp,
-                    "ozone_kg_m2":
-                        ozone_kg_m2,
-                    "ozone_DU":
-                        ozone_du,
-                    "grid_latitude":
-                        lat_used,
-                    "grid_longitude":
-                        lon_used,
-                    "source":
-                        "CAMS global atmospheric "
-                        "composition analysis",
-                }
-            )
-
-        ds.close()
 
     return output_rows
 
@@ -443,6 +594,11 @@ def main():
             rows
         )
 
+    if not all_rows:
+        raise ValueError(
+            "No CAMS ozone rows were extracted."
+        )
+
     result = pd.DataFrame(
         all_rows
     )
@@ -459,6 +615,12 @@ def main():
 
     result = (
         result
+        .dropna(
+            subset=[
+                "datetime_utc",
+                "ozone_DU",
+            ]
+        )
         .drop_duplicates(
             subset=[
                 "datetime_utc",

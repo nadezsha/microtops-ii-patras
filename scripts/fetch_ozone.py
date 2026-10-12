@@ -612,6 +612,9 @@ def extract_rows(
 
             else:
 
+                # CAMS may return only one available analysis
+                # for the current day. After squeeze(), this
+                # becomes a scalar with no remaining dimension.
                 values = np.asarray(
                     point.values
                 )
@@ -633,9 +636,86 @@ def extract_rows(
                     / KG_M2_PER_DU
                 )
 
-                raise ValueError(
-                    "CAMS returned scalar ozone "
-                    "without a usable time dimension."
+                # Recover the scalar analysis timestamp.
+                timestamp = None
+
+                for time_coord in [
+                    "valid_time",
+                    "time",
+                    "forecast_reference_time",
+                ]:
+
+                    if time_coord not in point.coords:
+                        continue
+
+                    coord_values = np.asarray(
+                        point[
+                            time_coord
+                        ].values
+                    )
+
+                    if coord_values.size != 1:
+                        continue
+
+                    candidate = pd.to_datetime(
+                        coord_values.reshape(-1)[0],
+                        utc=True,
+                        errors="coerce",
+                    )
+
+                    if not pd.isna(candidate):
+                        timestamp = candidate
+                        break
+
+                if timestamp is None:
+
+                    raise ValueError(
+                        "CAMS returned scalar ozone, "
+                        "but its timestamp could not "
+                        "be determined."
+                    )
+
+                lat_used = float(
+                    np.asarray(
+                        point[
+                            lat_name
+                        ].values
+                    ).reshape(-1)[0]
+                )
+
+                lon_used = float(
+                    np.asarray(
+                        point[
+                            lon_name
+                        ].values
+                    ).reshape(-1)[0]
+                )
+
+                rows.append(
+                    {
+                        "datetime_utc":
+                            timestamp,
+
+                        "ozone_kg_m2":
+                            ozone_kg_m2,
+
+                        "ozone_DU":
+                            ozone_du,
+
+                        "grid_latitude":
+                            lat_used,
+
+                        "grid_longitude":
+                            lon_used,
+
+                        "source":
+                            (
+                                "CAMS global "
+                                "atmospheric "
+                                "composition "
+                                "analysis"
+                            ),
+                    }
                 )
 
     return rows

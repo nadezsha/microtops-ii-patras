@@ -15,6 +15,9 @@ jobs:
   process:
     runs-on: ubuntu-latest
 
+    env:
+      COPERNICUS_ADS_API: ${{ secrets.COPERNICUS_ADS_API }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,22 +36,33 @@ jobs:
         run: |
           python scripts/ingest.py
 
-      - name: Commit processed dataset
+      - name: Fetch CAMS ozone
+        run: |
+          python scripts/fetch_ozone.py
+
+      - name: Commit processed datasets
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add data/processed/microtops_raw_master.csv
+          git add data/auxiliary/ozone_cams.csv
 
           if git diff --cached --quiet; then
             echo "No processed-data changes to commit."
           else
-            git commit -m "Update processed Microtops dataset"
+            git commit -m "Update processed Microtops and CAMS ozone data"
             git push
           fi
 
-      - name: Upload processed dataset as artifact
+      - name: Upload processed Microtops dataset
         uses: actions/upload-artifact@v4
         with:
           name: microtops-processed-data
           path: data/processed/microtops_raw_master.csv
+
+      - name: Upload CAMS ozone dataset
+        uses: actions/upload-artifact@v4
+        with:
+          name: cams-ozone-data
+          path: data/auxiliary/ozone_cams.csv

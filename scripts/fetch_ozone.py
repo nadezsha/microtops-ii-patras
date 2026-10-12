@@ -231,12 +231,12 @@ def detect_ozone_variable(dataset):
     """
 
     candidates = [
+        "gtco3",
         "tco3",
         "total_column_ozone",
     ]
 
     for name in candidates:
-
         if name in dataset.data_vars:
             return name
 

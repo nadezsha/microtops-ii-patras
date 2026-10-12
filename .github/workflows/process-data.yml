@@ -8,6 +8,9 @@ on:
       - "requirements.txt"
       - ".github/workflows/process-data.yml"
 
+permissions:
+  contents: write
+
 jobs:
   process:
     runs-on: ubuntu-latest
@@ -29,6 +32,20 @@ jobs:
       - name: Run ingestion
         run: |
           python scripts/ingest.py
+
+      - name: Commit processed dataset
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add data/processed/microtops_raw_master.csv
+
+          if git diff --cached --quiet; then
+            echo "No processed-data changes to commit."
+          else
+            git commit -m "Update processed Microtops dataset"
+            git push
+          fi
 
       - name: Upload processed dataset as artifact
         uses: actions/upload-artifact@v4
